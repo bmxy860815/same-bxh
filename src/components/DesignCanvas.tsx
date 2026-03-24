@@ -231,8 +231,8 @@ export function DesignCanvas({ elements, selectedId, onSelect, onChange, canvasC
     fill: canvasTexture ? undefined : canvasColor,
     fillPatternImage: canvasTexture ? texImg : undefined,
     fillPatternScale: canvasTexture ? { x: 0.5, y: 0.5 } : undefined,
-    stroke: "#FFFFFF",
-    strokeWidth: 1,
+    stroke: "rgba(0,0,0,0.1)",
+    strokeWidth: 0.5,
   };
 
   return (

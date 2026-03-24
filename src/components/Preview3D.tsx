@@ -66,10 +66,10 @@ function Face({
     
     // Define planes in local space: x=±w/2, y=±h/2
     const localPlanes = [
-      { n: new THREE.Vector3(-1, 0, 0), d: width / 2 },  // Right boundary (x < w/2)
-      { n: new THREE.Vector3(1, 0, 0), d: width / 2 },   // Left boundary (x > -w/2)
-      { n: new THREE.Vector3(0, -1, 0), d: height / 2 }, // Top boundary (y < h/2)
-      { n: new THREE.Vector3(0, 1, 0), d: height / 2 }   // Bottom boundary (y > -h/2)
+      { n: new THREE.Vector3(-1, 0, 0), d: width / 2 + 0.01 },  // Right boundary
+      { n: new THREE.Vector3(1, 0, 0), d: width / 2 + 0.01 },   // Left boundary
+      { n: new THREE.Vector3(0, -1, 0), d: height / 2 + 0.01 }, // Top boundary
+      { n: new THREE.Vector3(0, 1, 0), d: height / 2 + 0.01 }   // Bottom boundary
     ];
 
     localPlanes.forEach((p, i) => {
@@ -83,7 +83,7 @@ function Face({
   return (
     <group position={position} rotation={rotation}>
       <mesh ref={meshRef} castShadow receiveShadow>
-        <planeGeometry args={[width, height]} />
+        <planeGeometry args={[width + 0.01, height + 0.01]} />
         <meshStandardMaterial 
           color={canvasTexture ? '#FFFFFF' : canvasColor} 
           map={canvasTexture ? texture : null}
