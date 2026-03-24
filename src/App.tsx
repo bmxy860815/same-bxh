@@ -7,10 +7,82 @@ import { Preview3D } from './components/Preview3D';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { BoxElement, ViewMode, BoxSide } from './types';
 import { BoxType } from './types/box';
+
+interface Template {
+  id: string;
+  name: string;
+  elements: BoxElement[];
+  boxTypeId: string;
+  canvasColor: string;
+  canvasTexture: string | null;
+  thumbnail?: string;
+}
+
+const DEFAULT_TEMPLATES: Template[] = [
+  {
+    id: 'default-1',
+    name: '简约自然风',
+    boxTypeId: 'standard-box',
+    canvasColor: '#D2B48C',
+    canvasTexture: null,
+    elements: [
+      {
+        id: 't1-1',
+        type: 'text',
+        side: 'outside',
+        x: 400,
+        y: 250,
+        width: 120,
+        height: 40,
+        rotation: 0,
+        opacity: 1,
+        text: 'NATURAL',
+        fontSize: 28,
+        fill: '#5D4037',
+      },
+      {
+        id: 't1-2',
+        type: 'image',
+        side: 'outside',
+        x: 400,
+        y: 350,
+        width: 100,
+        height: 100,
+        rotation: 0,
+        opacity: 0.8,
+        src: 'https://cdn-icons-png.flaticon.com/512/104/104647.png',
+      }
+    ]
+  },
+  {
+    id: 'default-2',
+    name: '极简白设计',
+    boxTypeId: 'pizza-box',
+    canvasColor: '#FFFFFF',
+    canvasTexture: null,
+    elements: [
+      {
+        id: 't2-1',
+        type: 'text',
+        side: 'outside',
+        x: 500,
+        y: 400,
+        width: 200,
+        height: 60,
+        rotation: 0,
+        opacity: 1,
+        text: 'MINIMAL',
+        fontSize: 40,
+        fill: '#333333',
+      }
+    ]
+  }
+];
+
 import { BOX_TEMPLATES } from './constants/boxTemplates';
 import { GoogleGenAI } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, X, Loader2, Play, Pause, RotateCcw, Upload, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Barcode, QrCode, Box } from 'lucide-react';
+import { Sparkles, X, Loader2, Play, Pause, RotateCcw, Upload, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Barcode, QrCode, Box, Trash2 } from 'lucide-react';
 import { CodeModal } from './components/CodeModal';
 
 const INITIAL_ELEMENTS: BoxElement[] = [
@@ -36,6 +108,7 @@ export default function App() {
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
   const [unfoldProgress, setUnfoldProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [animationDirection, setAnimationDirection] = useState<1 | -1>(1);
   const [activeTab, setActiveTab] = useState<TabType>('asset');
   const [canvasColor, setCanvasColor] = useState('#D2B48C');
   const [canvasTexture, setCanvasTexture] = useState<string | null>(null);
@@ -43,6 +116,15 @@ export default function App() {
   const [currentSide, setCurrentSide] = useState<BoxSide>('outside');
   const [modalType, setModalType] = useState<'barcode' | 'qrcode' | null>(null);
   const [miniPreviewSize, setMiniPreviewSize] = useState({ width: 256, height: 192 });
+  const [templates, setTemplates] = useState<Template[]>(() => {
+    try {
+      const saved = localStorage.getItem('box-templates');
+      const userTemplates = saved ? JSON.parse(saved) : [];
+      return [...DEFAULT_TEMPLATES, ...userTemplates];
+    } catch (e) {
+      return DEFAULT_TEMPLATES;
+    }
+  });
   const [uploadedImages, setUploadedImages] = useState<string[]>([
     'https://picsum.photos/seed/user1/400/400',
     'https://picsum.photos/seed/user2/400/400',
@@ -60,10 +142,16 @@ export default function App() {
       lastTime = time;
 
       setUnfoldProgress(prev => {
-        const next = prev + deltaTime / 3000; // 3 seconds for full unfold
-        if (next >= 1) {
+        const step = (deltaTime / 2000) * animationDirection; // 2 seconds for full cycle
+        const next = prev + step;
+        
+        if (animationDirection === 1 && next >= 1) {
           setIsPlaying(false);
           return 1;
+        }
+        if (animationDirection === -1 && next <= 0) {
+          setIsPlaying(false);
+          return 0;
         }
         return next;
       });
@@ -73,7 +161,7 @@ export default function App() {
 
     frameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frameId);
-  }, [isPlaying]);
+  }, [isPlaying, animationDirection]);
 
   const handleAddCodeToCanvas = (dataUrl: string) => {
     const newId = Math.random().toString(36).substr(2, 9);
@@ -92,6 +180,42 @@ export default function App() {
     setElements(prev => [...prev, newElement]);
     setSelectedId(newId);
     setModalType(null);
+  };
+
+  const handleSaveTemplate = () => {
+    const newTemplate: Template = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: `我的模板 ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+      elements: elements,
+      boxTypeId: boxType.id,
+      canvasColor: canvasColor,
+      canvasTexture: canvasTexture,
+    };
+    
+    const userTemplates = templates.filter(t => !DEFAULT_TEMPLATES.find(dt => dt.id === t.id));
+    const updatedUserTemplates = [...userTemplates, newTemplate];
+    localStorage.setItem('box-templates', JSON.stringify(updatedUserTemplates));
+    setTemplates([...DEFAULT_TEMPLATES, ...updatedUserTemplates]);
+    alert('当前设计已保存为模板！');
+  };
+
+  const handleLoadTemplate = (template: Template) => {
+    const targetBox = BOX_TEMPLATES.find(b => b.id === template.boxTypeId) || BOX_TEMPLATES[0];
+    setBoxType(targetBox);
+    setElements(template.elements);
+    setCanvasColor(template.canvasColor);
+    setCanvasTexture(template.canvasTexture);
+    setSelectedId(null);
+    setActiveTab('layer'); // Switch to layer tab to show elements
+  };
+
+  const handleDeleteTemplate = (e: React.MouseEvent, templateId: string) => {
+    e.stopPropagation();
+    if (!confirm('确定要删除这个模板吗？')) return;
+    
+    const userTemplates = templates.filter(t => !DEFAULT_TEMPLATES.find(dt => dt.id === t.id) && t.id !== templateId);
+    localStorage.setItem('box-templates', JSON.stringify(userTemplates));
+    setTemplates([...DEFAULT_TEMPLATES, ...userTemplates]);
   };
 
   const selectedElement = elements.find(el => el.id === selectedId) || null;
@@ -267,7 +391,13 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-white text-gray-900 font-sans overflow-hidden">
-      <TopBar viewMode={viewMode} setViewMode={setViewMode} currentSide={currentSide} setCurrentSide={setCurrentSide} />
+      <TopBar 
+        viewMode={viewMode} 
+        setViewMode={setViewMode} 
+        currentSide={currentSide} 
+        setCurrentSide={setCurrentSide} 
+        onSaveTemplate={handleSaveTemplate}
+      />
       
       <div className="flex-1 flex overflow-hidden">
         <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
@@ -556,9 +686,46 @@ export default function App() {
               )}
 
               {activeTab === 'template' && (
-                <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-                  <Loader2 className="animate-spin mb-2" size={24} />
-                  <p className="text-xs">功能开发中...</p>
+                <div className="p-4 flex flex-col gap-4">
+                  <div className="grid grid-cols-1 gap-4">
+                    {templates.map((template) => (
+                      <div 
+                        key={template.id}
+                        onClick={() => handleLoadTemplate(template)}
+                        className="group cursor-pointer border border-gray-100 rounded-xl overflow-hidden hover:border-orange-200 hover:shadow-md transition-all bg-gray-50"
+                      >
+                        <div className="aspect-[4/3] bg-white flex items-center justify-center relative overflow-hidden">
+                          {/* Simple preview representation */}
+                          <div 
+                            className="w-2/3 h-2/3 rounded shadow-sm border border-gray-100 flex items-center justify-center text-[8px] text-gray-300"
+                            style={{ backgroundColor: template.canvasColor }}
+                          >
+                            {template.name}
+                          </div>
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                            <span className="bg-orange-500 text-white text-[10px] px-3 py-1 rounded-full font-bold">使用模板</span>
+                          </div>
+                        </div>
+                        <div className="p-3 bg-white border-t border-gray-50 flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-bold text-gray-700 truncate">{template.name}</div>
+                            <div className="text-[10px] text-gray-400 mt-1">
+                              {BOX_TEMPLATES.find(b => b.id === template.boxTypeId)?.name || '未知盒型'}
+                            </div>
+                          </div>
+                          {!DEFAULT_TEMPLATES.find(dt => dt.id === template.id) && (
+                            <button 
+                              onClick={(e) => handleDeleteTemplate(e, template.id)}
+                              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all"
+                              title="删除模板"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -622,12 +789,23 @@ export default function App() {
               <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-sm px-4 py-3 rounded-full shadow-lg border border-gray-200 z-30 flex items-center gap-4 min-w-[350px]">
                 <button 
                   onClick={() => {
-                    if (unfoldProgress >= 1) setUnfoldProgress(0);
-                    setIsPlaying(!isPlaying);
+                    if (isPlaying) {
+                      setIsPlaying(false);
+                    } else {
+                      // Decide direction based on current progress to match the icon
+                      const targetDirection = unfoldProgress >= 0.5 ? -1 : 1;
+                      setAnimationDirection(targetDirection);
+                      setIsPlaying(true);
+                    }
                   }}
                   className="w-8 h-8 flex items-center justify-center bg-orange-500 text-white rounded-full hover:bg-orange-600 transition-colors shadow-sm"
+                  title={isPlaying ? "暂停" : (unfoldProgress >= 0.5 ? "折叠" : "展开")}
                 >
-                  {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} className="ml-0.5" fill="currentColor" />}
+                  {isPlaying ? (
+                    <Pause size={16} fill="currentColor" />
+                  ) : (
+                    unfoldProgress >= 0.5 ? <ChevronsDown size={16} /> : <ChevronsUp size={16} />
+                  )}
                 </button>
 
                 <button 

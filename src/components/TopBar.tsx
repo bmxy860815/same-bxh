@@ -16,9 +16,10 @@ interface TopBarProps {
   setViewMode: (mode: '2d' | '3d') => void;
   currentSide: 'outside' | 'inside';
   setCurrentSide: (side: 'outside' | 'inside') => void;
+  onSaveTemplate: () => void;
 }
 
-export function TopBar({ viewMode, setViewMode, currentSide, setCurrentSide }: TopBarProps) {
+export function TopBar({ viewMode, setViewMode, currentSide, setCurrentSide, onSaveTemplate }: TopBarProps) {
   return (
     <header className="h-12 bg-white border-b border-gray-200 flex items-center px-4 justify-between z-20">
       <div className="flex items-center gap-4">
@@ -77,8 +78,11 @@ export function TopBar({ viewMode, setViewMode, currentSide, setCurrentSide }: T
       </div>
 
       <div className="flex items-center gap-3">
-        <button className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:bg-gray-100 px-3 py-1.5 rounded-md border border-gray-200">
-          <Printer size={14} /> 小批量印刷
+        <button 
+          onClick={onSaveTemplate}
+          className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:bg-gray-100 px-3 py-1.5 rounded-md border border-gray-200"
+        >
+          <Zap size={14} className="text-orange-500" /> 保存为模板
         </button>
         <button className="flex items-center gap-1 text-xs font-medium text-orange-500 bg-orange-50 hover:bg-orange-100 px-4 py-1.5 rounded-md border border-orange-200">
           渲染
