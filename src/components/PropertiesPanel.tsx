@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { BoxElement } from '../types';
 import { cn } from '../lib/utils';
+import { ModelPanelMode, TextureSizeConfig, TextureSizeUnit } from '../lib/modelPanel';
 
 interface PropertiesPanelProps {
   selectedElement: BoxElement | null;
@@ -26,6 +27,13 @@ interface PropertiesPanelProps {
   onCanvasColorChange: (color: string) => void;
   canvasTexture: string | null;
   onCanvasTextureChange: (texture: string | null) => void;
+  metalness: number;
+  onMetalnessChange: (val: number) => void;
+  roughness: number;
+  onRoughnessChange: (val: number) => void;
+  modelPanelMode: ModelPanelMode;
+  textureSizeConfig: TextureSizeConfig;
+  onTextureSizeChange: (patch: Partial<TextureSizeConfig>) => void;
 }
 
 export function PropertiesPanel({ 
@@ -36,9 +44,47 @@ export function PropertiesPanel({
   canvasColor,
   onCanvasColorChange,
   canvasTexture,
-  onCanvasTextureChange
+  onCanvasTextureChange,
+  metalness,
+  onMetalnessChange,
+  roughness,
+  onRoughnessChange,
+  modelPanelMode,
+  textureSizeConfig,
+  onTextureSizeChange
 }: PropertiesPanelProps) {
   const [canvasTab, setCanvasTab] = React.useState<'color' | 'texture'>('color');
+  const dragStateRef = React.useRef<{
+    field: 'width' | 'height';
+    startX: number;
+    startValue: number;
+  } | null>(null);
+
+  const unitList: TextureSizeUnit[] = ['px', 'mm', 'cm', 'in'];
+
+  React.useEffect(() => {
+    const move = (event: MouseEvent) => {
+      if (!dragStateRef.current) return;
+      const delta = event.clientX - dragStateRef.current.startX;
+      const value = Math.max(1, Math.round(dragStateRef.current.startValue + delta));
+      onTextureSizeChange({ [dragStateRef.current.field]: value });
+    };
+    const up = () => {
+      dragStateRef.current = null;
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    return () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+  }, [onTextureSizeChange]);
+
+  const beginDrag = (field: 'width' | 'height', value: number) => (event: React.MouseEvent) => {
+    dragStateRef.current = { field, startX: event.clientX, startValue: value };
+  };
 
   if (!selectedElement) {
     return (
@@ -52,28 +98,83 @@ export function PropertiesPanel({
           <section>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-sm font-bold text-gray-800 flex items-center gap-1">
-                尺寸/材质 <span className="text-gray-300 font-normal">?</span>
+                {modelPanelMode === 'white_uv' ? '贴图尺寸' : '尺寸/材质'} <span className="text-gray-300 font-normal">?</span>
               </h3>
               <button className="text-xs text-orange-500 bg-orange-50 px-3 py-1 rounded font-medium">编辑</button>
             </div>
             
-            <div className="space-y-3">
-              <div className="flex justify-between text-xs">
-                <span className="text-gray-400">制造尺寸(mm)</span>
-                <span className="text-gray-600 font-medium">L:80 W:80 H:180</span>
+            {modelPanelMode === 'white_uv' ? (
+              <div className="space-y-3 transition-all duration-200" data-testid="uv-size-controls">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="border border-gray-200 rounded px-2 py-1">
+                    <div className="text-[10px] text-gray-400 mb-1 cursor-ew-resize" onMouseDown={beginDrag('width', textureSizeConfig.width)}>宽</div>
+                    <input
+                      data-testid="uv-width-input"
+                      type="number"
+                      min={1}
+                      value={textureSizeConfig.width}
+                      onChange={(e) => onTextureSizeChange({ width: Math.max(1, Number(e.target.value) || 1) })}
+                      className="w-full text-xs outline-none"
+                    />
+                  </div>
+                  <div className="border border-gray-200 rounded px-2 py-1">
+                    <div className="text-[10px] text-gray-400 mb-1 cursor-ew-resize" onMouseDown={beginDrag('height', textureSizeConfig.height)}>高</div>
+                    <input
+                      data-testid="uv-height-input"
+                      type="number"
+                      min={1}
+                      value={textureSizeConfig.height}
+                      onChange={(e) => onTextureSizeChange({ height: Math.max(1, Number(e.target.value) || 1) })}
+                      className="w-full text-xs outline-none"
+                    />
+                  </div>
+                </div>
+                <select
+                  data-testid="uv-unit-select"
+                  value={textureSizeConfig.unit}
+                  onChange={(e) => onTextureSizeChange({ unit: e.target.value as TextureSizeUnit })}
+                  className="w-full border border-gray-200 rounded px-2 py-1 text-xs outline-none bg-white"
+                >
+                  {unitList.map(unit => (
+                    <option key={unit} value={unit}>{unit}</option>
+                  ))}
+                </select>
+                <input
+                  type="range"
+                  min={1}
+                  max={4096}
+                  value={Math.min(textureSizeConfig.width, 4096)}
+                  onChange={(e) => onTextureSizeChange({ width: Number(e.target.value) })}
+                  className="w-full accent-orange-500"
+                />
+                <input
+                  type="range"
+                  min={1}
+                  max={4096}
+                  value={Math.min(textureSizeConfig.height, 4096)}
+                  onChange={(e) => onTextureSizeChange({ height: Number(e.target.value) })}
+                  className="w-full accent-orange-500"
+                />
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-gray-400">材质</span>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-sm bg-[#D2B48C]"></div>
-                  <span className="text-gray-600 font-medium">E瓦(三层)(1.5-2mm)</span>
+            ) : (
+              <div className="space-y-3 transition-all duration-200" data-testid="default-size-material">
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">制造尺寸(mm)</span>
+                  <span className="text-gray-600 font-medium">L:80 W:80 H:180</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">材质</span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 rounded-sm bg-[#D2B48C]"></div>
+                    <span className="text-gray-600 font-medium">E瓦(三层)(1.5-2mm)</span>
+                  </div>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">厚度</span>
+                  <span className="text-gray-600 font-medium">1.5mm</span>
                 </div>
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-gray-400">厚度</span>
-                <span className="text-gray-600 font-medium">1.5mm</span>
-              </div>
-            </div>
+            )}
           </section>
 
           <div className="h-px bg-gray-100 w-full"></div>
@@ -104,9 +205,32 @@ export function PropertiesPanel({
 
             {canvasTab === 'color' ? (
               <div className="grid grid-cols-6 gap-2">
-                {/* Transparent / Default option */}
+                {/* Transparent / None option */}
                 <button 
-                  onClick={() => onCanvasColorChange('#D2B48C')}
+                  onClick={() => {
+                    onCanvasColorChange('transparent');
+                    if (onCanvasTextureChange) onCanvasTextureChange(null);
+                  }}
+                  className={cn(
+                      "aspect-square rounded-md border transition-all flex items-center justify-center bg-white relative overflow-hidden",
+                      canvasColor === 'transparent' && !canvasTexture ? "border-orange-500 scale-110 shadow-sm" : "border-gray-200 hover:border-gray-300"
+                    )}
+                  title="无背景 / 透明"
+                >
+                  <div className="absolute inset-0 opacity-10" style={{ 
+                    backgroundImage: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)',
+                    backgroundSize: '10px 10px',
+                    backgroundPosition: '0 0, 0 5px, 5px -5px, -5px 0px'
+                  }}></div>
+                  <div className="w-[140%] h-px bg-red-500 absolute rotate-45 transform origin-center"></div>
+                </button>
+
+                {/* Default option */}
+                <button 
+                  onClick={() => {
+                    onCanvasColorChange('#D2B48C');
+                    if (onCanvasTextureChange) onCanvasTextureChange(null);
+                  }}
                   className={cn(
                     "aspect-square rounded-md border transition-all flex items-center justify-center overflow-hidden",
                     canvasColor === '#D2B48C' && !canvasTexture ? "border-orange-500 scale-110 shadow-sm" : "border-gray-100 hover:border-gray-300"
@@ -121,22 +245,28 @@ export function PropertiesPanel({
                 {[
                   '#333333', '#FFFFFF', '#E53E3E', '#4299E1', '#9AE6B4', '#ED8936',
                   '#F6E05E', '#000000', '#38B2AC', '#ED64A6', '#B794F7', '#A0AEC0'
-                ].map((color) => (
-                  <button 
-                    key={color}
-                    onClick={() => onCanvasColorChange(color)}
-                    className={cn(
-                      "aspect-square rounded-md border transition-all",
-                      canvasColor === color && !canvasTexture ? "border-orange-500 scale-110 shadow-sm" : "border-gray-100 hover:border-gray-300"
-                    )}
-                    style={{ 
-                      backgroundColor: color,
-                      backgroundImage: color === '#FFFFFF' ? 'linear-gradient(45deg, #f0f0f0 25%, transparent 25%), linear-gradient(-45deg, #f0f0f0 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #f0f0f0 75%), linear-gradient(-45deg, transparent 75%, #f0f0f0 75%)' : 'none',
-                      backgroundSize: '8px 8px',
-                      backgroundPosition: '0 0, 0 4px, 4px 4px, 4px 0'
-                    }}
-                  />
-                ))}
+                ].map((color) => {
+                  const isActive = canvasColor === color && !canvasTexture;
+                  return (
+                    <button 
+                      key={color}
+                      onClick={() => {
+                        onCanvasColorChange(color);
+                        if (onCanvasTextureChange) onCanvasTextureChange(null);
+                      }}
+                      className={cn(
+                        "aspect-square rounded-md border transition-all",
+                        isActive ? "border-orange-500 scale-110 shadow-sm" : "border-gray-100 hover:border-gray-300"
+                      )}
+                      style={{ 
+                        backgroundColor: color,
+                        backgroundImage: color === '#FFFFFF' ? 'linear-gradient(45deg, #f0f0f0 25%, transparent 25%), linear-gradient(-45deg, #f0f0f0 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #f0f0f0 75%), linear-gradient(-45deg, transparent 75%, #f0f0f0 75%)' : 'none',
+                        backgroundSize: '8px 8px',
+                        backgroundPosition: '0 0, 0 4px, 4px 4px, 4px 0'
+                      }}
+                    />
+                  );
+                })}
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-2">
@@ -161,6 +291,40 @@ export function PropertiesPanel({
                 ))}
               </div>
             )}
+          </section>
+
+          <div className="h-px bg-gray-100 w-full"></div>
+
+          <section>
+            <h3 className="text-sm font-bold text-gray-800 mb-4">材质属性 (3D)</h3>
+            <div className="space-y-4">
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-xs text-gray-600">金属度</span>
+                  <span className="text-[10px] text-gray-400">{Math.round(metalness * 100)}%</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0" max="1" step="0.01" 
+                  value={metalness} 
+                  onChange={e => onMetalnessChange(parseFloat(e.target.value))}
+                  className="w-full accent-orange-500"
+                />
+              </div>
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-xs text-gray-600">粗糙度</span>
+                  <span className="text-[10px] text-gray-400">{Math.round(roughness * 100)}%</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0" max="1" step="0.01" 
+                  value={roughness} 
+                  onChange={e => onRoughnessChange(parseFloat(e.target.value))}
+                  className="w-full accent-orange-500"
+                />
+              </div>
+            </div>
           </section>
         </div>
       </aside>

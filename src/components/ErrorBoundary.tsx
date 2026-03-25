@@ -24,8 +24,11 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public render() {
     if (this.state.hasError) {
-      return this.props.fallback || (
-        <div className="flex flex-col items-center justify-center p-4 bg-red-50 border border-red-100 rounded-lg">
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return (
+        <div className="flex flex-col items-center justify-center p-4 bg-red-50 border border-red-100 rounded-lg h-full w-full">
           <p className="text-xs text-red-500 font-medium">预览加载失败</p>
           <button 
             onClick={() => this.setState({ hasError: false })}

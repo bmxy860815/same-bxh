@@ -1,4 +1,4 @@
-import React, { useRef, useMemo, Suspense } from 'react';
+import React, { useRef, useMemo, Suspense, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Environment, ContactShadows, useTexture, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -8,6 +8,9 @@ import { cn } from '../lib/utils';
 import { ErrorBoundary } from './ErrorBoundary';
 import { Loader2 } from 'lucide-react';
 
+import { ParsedGLB } from '../lib/glbParser';
+import { TextureSizeConfig } from '../lib/modelPanel';
+
 interface Preview3DProps {
   elements: BoxElement[];
   isMini?: boolean;
@@ -15,6 +18,11 @@ interface Preview3DProps {
   canvasColor?: string;
   canvasTexture?: string | null;
   boxType: BoxType;
+  glbData?: ParsedGLB | null;
+  designCanvas?: HTMLCanvasElement | null;
+  metalness?: number;
+  roughness?: number;
+  textureSizeConfig?: TextureSizeConfig;
 }
 
 function Face({ 
@@ -316,13 +324,148 @@ function ElementPart({
   );
 }
 
-export function Preview3D({ elements, isMini = false, unfoldProgress = 0, canvasColor, canvasTexture, boxType }: Preview3DProps) {
+function GLBModelViewer({ glbData, designCanvas, canvasColor, metalness = 0.5, roughness = 0.5, textureSizeConfig, elements }: { glbData: ParsedGLB, designCanvas?: HTMLCanvasElement | null, canvasColor?: string, metalness?: number, roughness?: number, textureSizeConfig?: TextureSizeConfig, elements?: BoxElement[] }) {
+  const clonedScene = useMemo(() => {
+    if (!glbData?.gltf?.scene) return null;
+    return glbData.gltf.scene.clone();
+  }, [glbData]);
+
+  const canvasTexture = useMemo(() => {
+    if (!designCanvas) return null;
+    const tex = new THREE.CanvasTexture(designCanvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.flipY = false;
+    return tex;
+  }, [designCanvas]);
+  
+  // Track if the canvas has actually been modified by the user
+  const hasCanvasModifications = useMemo(() => {
+    return canvasColor !== '#FFFFFF' || canvasTexture !== null || glbData?.uvData;
+  }, [canvasColor, canvasTexture, glbData]);
+
+  const { glbCanvasWidth, glbCanvasHeight } = useMemo(() => {
+    const uvWidth = glbData?.uvData?.width || 1;
+    const uvHeight = glbData?.uvData?.height || 1;
+    let width = 1600;
+    let height = 1600;
+    
+    if (textureSizeConfig) {
+      const unitToPx: Record<string, number> = { px: 1, mm: 300 / 25.4, cm: 300 / 2.54, in: 300 };
+      const factor = unitToPx[textureSizeConfig.unit] || 1;
+      width = Math.max(256, Math.min(8192, Math.round(textureSizeConfig.width * factor)));
+      height = Math.max(256, Math.min(8192, Math.round(textureSizeConfig.height * factor)));
+    } else {
+      const maxSide = 1600;
+      const minSide = 800;
+      if (uvWidth >= uvHeight) {
+        width = maxSide;
+        height = Math.max(minSide, Math.round(maxSide * (uvHeight / uvWidth)));
+      } else {
+        height = maxSide;
+        width = Math.max(minSide, Math.round(maxSide * (uvWidth / uvHeight)));
+      }
+    }
+    return { glbCanvasWidth: width, glbCanvasHeight: height };
+  }, [glbData, textureSizeConfig]);
+
+  useEffect(() => {
+    if (canvasTexture && glbData?.uvData) {
+      const uvWidth = glbData.uvData.width || 1;
+      const uvHeight = glbData.uvData.height || 1;
+      const uvMinX = glbData.uvData.bounds.minX || 0;
+      const uvMinY = glbData.uvData.bounds.minY || 0;
+      
+      const contourPadding = 60;
+      const usableW = Math.max(1, glbCanvasWidth - contourPadding * 2);
+      const usableH = Math.max(1, glbCanvasHeight - contourPadding * 2);
+      const contourScaleX = usableW / Math.max(uvWidth, 1e-6);
+      const contourScaleY = usableH / Math.max(uvHeight, 1e-6);
+      
+      const repeatX = contourScaleX / glbCanvasWidth;
+      const repeatY = contourScaleY / glbCanvasHeight;
+      const offsetX = (contourPadding - uvMinX * contourScaleX) / glbCanvasWidth;
+      const offsetY = (contourPadding - uvMinY * contourScaleY) / glbCanvasHeight;
+      
+      canvasTexture.repeat.set(repeatX, repeatY);
+      canvasTexture.offset.set(offsetX, offsetY);
+      canvasTexture.needsUpdate = true;
+    } else if (canvasTexture) {
+      canvasTexture.needsUpdate = true;
+    }
+  }, [canvasTexture, glbData, glbCanvasWidth, glbCanvasHeight]);
+
+  useEffect(() => {
+    if (!clonedScene) return;
+    
+    clonedScene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (mesh.name === glbData.targetMesh?.name) {
+          const originalMaterial = mesh.material as THREE.MeshStandardMaterial;
+          const material = originalMaterial.clone();
+          
+          const hasDesignElements = elements && elements.length > 0;
+          const hasCustomBackgroundColor = canvasColor && canvasColor !== 'transparent' && canvasColor !== '#FFFFFF';
+          
+          if (canvasTexture && (hasDesignElements || hasCustomBackgroundColor)) {
+            // Only override the material map with our canvas if the user has actually added design elements
+            // or has changed the background color to something non-transparent/non-white
+            material.map = canvasTexture;
+          }
+          if (canvasColor && canvasColor !== 'transparent') {
+            // When using a map, setting the color to white prevents the map from being multiplied by the background color.
+            // If the user wants the background color, it's already rendered into the CanvasTexture itself by Konva.
+            material.color.set('#ffffff');
+          } else if (canvasColor === 'transparent' && originalMaterial.color) {
+            // Restore the original material color if transparent is selected
+            material.color.copy(originalMaterial.color);
+          }
+          material.roughness = roughness;
+          material.metalness = metalness;
+          material.needsUpdate = true;
+          mesh.material = material;
+        }
+      }
+    });
+  }, [clonedScene, glbData, canvasTexture, canvasColor, metalness, roughness]);
+
+  // Adjust model position/scale to fit the view
+  useEffect(() => {
+    if (!clonedScene) return;
+    
+    const box = new THREE.Box3().setFromObject(clonedScene);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    
+    // Reset position to origin
+    clonedScene.position.x = -center.x;
+    clonedScene.position.y = -center.y;
+    clonedScene.position.z = -center.z;
+    
+    // Scale to a reasonable size
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim > 0) {
+      const scale = 5 / maxDim;
+      clonedScene.scale.set(scale, scale, scale);
+    }
+  }, [clonedScene]);
+
+  if (!clonedScene) return null;
+
+  return (
+    <group>
+      <primitive object={clonedScene} />
+    </group>
+  );
+}
+
+export function Preview3D({ elements, isMini = false, unfoldProgress = 0, canvasColor, canvasTexture, boxType, glbData, designCanvas, metalness = 0.5, roughness = 0.5, textureSizeConfig }: Preview3DProps) {
   return (
     <div className={cn(
       "bg-gray-200 overflow-hidden",
       isMini ? "w-full h-full rounded-lg" : "w-full h-full"
     )}>
-      <Canvas shadows gl={{ antialias: true, localClippingEnabled: true }}>
+      <Canvas shadows={{ type: THREE.PCFShadowMap }} gl={{ antialias: true, localClippingEnabled: true }}>
         <PerspectiveCamera makeDefault position={[4, 3, 6]} fov={40} />
         <OrbitControls 
           makeDefault 
@@ -344,14 +487,32 @@ export function Preview3D({ elements, isMini = false, unfoldProgress = 0, canvas
             </div>
           </Html>
         }>
-          <ErrorBoundary>
-            <BoxModel 
-              elements={elements} 
-              progress={unfoldProgress} 
-              canvasColor={canvasColor} 
-              canvasTexture={canvasTexture}
-              boxType={boxType}
-            />
+          <ErrorBoundary fallback={
+            <Html center>
+              <div className="flex flex-col items-center justify-center p-4 bg-red-50 border border-red-100 rounded-lg">
+                <p className="text-xs text-red-500 font-medium">预览加载失败</p>
+              </div>
+            </Html>
+          }>
+            {glbData ? (
+              <GLBModelViewer 
+                glbData={glbData} 
+                designCanvas={designCanvas} 
+                canvasColor={canvasColor}
+                metalness={metalness}
+                roughness={roughness}
+                textureSizeConfig={textureSizeConfig}
+                elements={elements}
+              />
+            ) : (
+              <BoxModel 
+                elements={elements} 
+                progress={unfoldProgress} 
+                canvasColor={canvasColor} 
+                canvasTexture={canvasTexture}
+                boxType={boxType}
+              />
+            )}
           </ErrorBoundary>
         </Suspense>
         

@@ -5,6 +5,7 @@ import { TopBar } from './components/TopBar';
 import { DesignCanvas } from './components/DesignCanvas';
 import { Preview3D } from './components/Preview3D';
 import { PropertiesPanel } from './components/PropertiesPanel';
+import { SwitchBoxControls } from './components/SwitchBoxControls';
 import { BoxElement, ViewMode, BoxSide } from './types';
 import { BoxType } from './types/box';
 
@@ -80,10 +81,24 @@ const DEFAULT_TEMPLATES: Template[] = [
 ];
 
 import { BOX_TEMPLATES } from './constants/boxTemplates';
+import * as THREE from 'three';
 import { GoogleGenAI } from "@google/genai";
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, X, Loader2, Play, Pause, RotateCcw, Upload, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Barcode, QrCode, Box, Trash2 } from 'lucide-react';
+import { Sparkles, X, Loader2, Upload, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Barcode, QrCode, Box, Trash2 } from 'lucide-react';
 import { CodeModal } from './components/CodeModal';
+import { ExportModal } from './components/ExportModal';
+import { useSwitchBoxAnimation } from './hooks/useSwitchBoxAnimation';
+
+import { parseGLB } from './lib/glbParser';
+import { calcMiniPreviewSizeFromBottomLeft } from './lib/miniPreviewResize';
+import {
+  createModelCacheKey,
+  ModelPanelMode,
+  resolveTextureSizeFromCache,
+  resolveModelPanelMode,
+  TextureSizeConfig,
+  TextureSizeUnit
+} from './lib/modelPanel';
 
 const INITIAL_ELEMENTS: BoxElement[] = [
   {
@@ -106,16 +121,161 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
-  const [unfoldProgress, setUnfoldProgress] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [animationDirection, setAnimationDirection] = useState<1 | -1>(1);
   const [activeTab, setActiveTab] = useState<TabType>('asset');
   const [canvasColor, setCanvasColor] = useState('#D2B48C');
   const [canvasTexture, setCanvasTexture] = useState<string | null>(null);
+  const [metalness, setMetalness] = useState(0.5);
+  const [roughness, setRoughness] = useState(0.5);
   const [boxType, setBoxType] = useState<BoxType>(BOX_TEMPLATES[0]);
   const [currentSide, setCurrentSide] = useState<BoxSide>('outside');
   const [modalType, setModalType] = useState<'barcode' | 'qrcode' | null>(null);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [miniPreviewSize, setMiniPreviewSize] = useState({ width: 256, height: 192 });
+  // Ensure to keep the export modal functional by generating dataUrl when needed
+  const [designCanvasDataUrl, setDesignCanvasDataUrl] = useState<string | null>(null);
+
+  // GLB Model State
+  const [glbModelUrl, setGlbModelUrl] = useState<string | File | null>('/pot.glb');
+  const [glbData, setGlbData] = useState<any>(null);
+  const [designCanvas, setDesignCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [textureSizeCache, setTextureSizeCache] = useState<Record<string, TextureSizeConfig>>({});
+  
+  const isGlbMode = !!glbData;
+  const isBoxModel = glbModelUrl === null;
+
+  const handleExport3D = async () => {
+    if (!glbData?.gltf?.scene) {
+      alert('当前没有可导出的3D模型');
+      return;
+    }
+
+    try {
+      const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+      const exporter = new GLTFExporter();
+      
+      // Clone the scene so we can modify it for export without affecting the preview
+      const exportScene = glbData.gltf.scene.clone();
+      
+      // Re-apply the canvas texture to the cloned scene's target mesh
+      const hasDesignElements = elements && elements.length > 0;
+      const hasCustomBackgroundColor = canvasColor && canvasColor !== 'transparent' && canvasColor !== '#FFFFFF';
+
+      if (designCanvas && glbData.targetMesh && (hasDesignElements || hasCustomBackgroundColor)) {
+        exportScene.traverse((child: any) => {
+          if (child.isMesh && child.name === glbData.targetMesh?.name) {
+            // Apply the canvas texture we've generated
+            const tex = new THREE.CanvasTexture(designCanvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.flipY = false;
+            
+            // Re-calculate the UV offset/repeat just like in Preview3D
+            const uvWidth = glbData.uvData?.width || 1;
+            const uvHeight = glbData.uvData?.height || 1;
+            const uvMinX = glbData.uvData?.bounds.minX || 0;
+            const uvMinY = glbData.uvData?.bounds.minY || 0;
+            
+            const contourPadding = 60;
+            const glbCanvasWidth = designCanvas.width;
+            const glbCanvasHeight = designCanvas.height;
+            const usableW = Math.max(1, glbCanvasWidth - contourPadding * 2);
+            const usableH = Math.max(1, glbCanvasHeight - contourPadding * 2);
+            const contourScaleX = usableW / Math.max(uvWidth, 1e-6);
+            const contourScaleY = usableH / Math.max(uvHeight, 1e-6);
+            
+            tex.repeat.set(contourScaleX / glbCanvasWidth, contourScaleY / glbCanvasHeight);
+            tex.offset.set(
+              (contourPadding - uvMinX * contourScaleX) / glbCanvasWidth,
+              (contourPadding - uvMinY * contourScaleY) / glbCanvasHeight
+            );
+            
+            child.material = child.material.clone();
+            child.material.map = tex;
+            
+            // Set material color to white when using a map to avoid multiplying the map's colors
+            // If the user set a custom canvas color, it's already rendered into the CanvasTexture
+            if (canvasColor && canvasColor !== 'transparent') {
+              child.material.color.set('#ffffff');
+            } else if (canvasColor === 'transparent' && child.material.color) {
+              // Restore original color if transparent, or keep it if no color exists
+              const originalColor = glbData.targetMesh?.material?.color;
+              if (originalColor) {
+                child.material.color.copy(originalColor);
+              }
+            }
+            
+            child.material.metalness = metalness;
+            child.material.roughness = roughness;
+          }
+        });
+      }
+
+      exporter.parse(
+        exportScene,
+        (gltf) => {
+          if (gltf instanceof ArrayBuffer) {
+            // GLB format
+            const blob = new Blob([gltf], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `model_export_${Date.now()}.glb`;
+            link.click();
+            URL.revokeObjectURL(url);
+          } else {
+            // GLTF format (JSON)
+            const output = JSON.stringify(gltf, null, 2);
+            const blob = new Blob([output], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `model_export_${Date.now()}.gltf`;
+            link.click();
+            URL.revokeObjectURL(url);
+          }
+        },
+        (error) => {
+          console.error('An error happened during GLTF export:', error);
+          alert('导出失败，请查看控制台');
+        },
+        { binary: true } // Export as GLB by default
+      );
+    } catch (e) {
+      console.error('Failed to load GLTFExporter or export model:', e);
+      alert('加载导出模块失败或导出过程出错');
+    }
+  };
+
+  const handleExportOpen = () => {
+    if (designCanvas) {
+      try {
+        setDesignCanvasDataUrl(designCanvas.toDataURL('image/png', 1.0));
+      } catch (error) {
+        console.error('Export source canvas is tainted:', error);
+        setDesignCanvasDataUrl(null);
+      }
+    }
+    setIsExportModalOpen(true);
+  };
+  
+  const {
+    unfoldProgress,
+    isPlaying,
+    togglePlayback,
+    resetPlayback,
+    changeProgress
+  } = useSwitchBoxAnimation(isBoxModel);
+
+  const handleCanvasReady = React.useCallback((canvas: HTMLCanvasElement) => {
+    if (!glbData) return;
+    try {
+      canvas.getContext('2d')?.getImageData(0, 0, 1, 1);
+      setDesignCanvas(canvas);
+    } catch (error) {
+      console.error('Canvas contains cross-origin resources and cannot be used as texture:', error);
+      setDesignCanvas(null);
+    }
+  }, [glbData]);
+
   const [templates, setTemplates] = useState<Template[]>(() => {
     try {
       const saved = localStorage.getItem('box-templates');
@@ -130,38 +290,72 @@ export default function App() {
     'https://picsum.photos/seed/user2/400/400',
   ]);
 
-  // Auto-play animation logic
+  // Parse GLB Model
   React.useEffect(() => {
-    if (!isPlaying) return;
-
-    let lastTime = performance.now();
-    let frameId: number;
-
-    const animate = (time: number) => {
-      const deltaTime = time - lastTime;
-      lastTime = time;
-
-      setUnfoldProgress(prev => {
-        const step = (deltaTime / 2000) * animationDirection; // 2 seconds for full cycle
-        const next = prev + step;
-        
-        if (animationDirection === 1 && next >= 1) {
-          setIsPlaying(false);
-          return 1;
-        }
-        if (animationDirection === -1 && next <= 0) {
-          setIsPlaying(false);
-          return 0;
-        }
-        return next;
+    if (glbModelUrl) {
+      parseGLB(glbModelUrl).then((data) => {
+        setGlbData(data);
+      }).catch(err => {
+        console.error('Failed to parse GLB:', err);
       });
+    } else {
+      setGlbData(null);
+    }
+  }, [glbModelUrl]);
 
-      frameId = requestAnimationFrame(animate);
-    };
+  const hasTextureChannel = React.useMemo(() => {
+    // If the model URL ends with glb/gltf, we assume it's a white model unless proven otherwise.
+    // For local default /pot.glb, it is definitely a white model and should show UV config
+    const isPotModel = glbModelUrl === '/pot.glb' || (glbModelUrl instanceof File && glbModelUrl.name === 'pot.glb');
+    if (isPotModel) return false;
 
-    frameId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frameId);
-  }, [isPlaying, animationDirection]);
+    const mat = glbData?.targetMesh?.material;
+    if (!mat) return false;
+    if (Array.isArray(mat)) {
+      return mat.some((m: any) => Boolean(m?.map));
+    }
+    return Boolean((mat as any)?.map);
+  }, [glbData, glbModelUrl]);
+
+  const modelPanelMode: ModelPanelMode = React.useMemo(
+    () => resolveModelPanelMode(glbModelUrl, hasTextureChannel),
+    [glbModelUrl, hasTextureChannel]
+  );
+
+  const modelCacheKey = React.useMemo(
+    () => createModelCacheKey(glbModelUrl, boxType.id),
+    [glbModelUrl, boxType.id]
+  );
+
+  const currentTextureSize = React.useMemo(() => {
+    // Check if we have manually forced dimensions for this model yet
+    const cached = textureSizeCache[modelCacheKey];
+    if (cached) return cached;
+    
+    // Default to the provided target physical dimensions (308x135 mm)
+    // For other models it will still fall back to calculated dimensions
+    const isPotModel = glbModelUrl === '/pot.glb' || (glbModelUrl instanceof File && glbModelUrl.name === 'pot.glb');
+    
+    if (isPotModel) {
+      return { width: 308, height: 135, unit: 'mm' as TextureSizeUnit };
+    }
+
+    const uvW = glbData?.uvData?.physicalWidth || glbData?.uvData?.width || 1;
+    const uvH = glbData?.uvData?.physicalHeight || glbData?.uvData?.height || 1;
+    return resolveTextureSizeFromCache(textureSizeCache, modelCacheKey, uvW, uvH);
+  }, [textureSizeCache, modelCacheKey, glbData?.uvData, glbModelUrl]);
+
+  const updateTextureSize = useCallback((patch: Partial<TextureSizeConfig>) => {
+    setTextureSizeCache(prev => {
+      const base = prev[modelCacheKey] || currentTextureSize;
+      const next: TextureSizeConfig = {
+        width: patch.width ?? base.width,
+        height: patch.height ?? base.height,
+        unit: patch.unit ?? base.unit
+      };
+      return { ...prev, [modelCacheKey]: next };
+    });
+  }, [modelCacheKey, currentTextureSize]);
 
   const handleAddCodeToCanvas = (dataUrl: string) => {
     const newId = Math.random().toString(36).substr(2, 9);
@@ -347,35 +541,57 @@ export default function App() {
     setSelectedId(newId);
   };
 
-  const startResizingMiniPreview = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    const startX = e.clientX;
-    const startY = e.clientY;
+  const stopResizeRef = React.useRef<null | (() => void)>(null);
+
+  const startResizingMiniPreview = useCallback((startX: number, startY: number) => {
     const startWidth = miniPreviewSize.width;
     const startHeight = miniPreviewSize.height;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaX = startX - moveEvent.clientX;
-      const deltaY = moveEvent.clientY - startY;
-      
-      setMiniPreviewSize({
-        width: Math.max(160, Math.min(800, startWidth + deltaX)),
-        height: Math.max(120, Math.min(600, startHeight + deltaY))
-      });
+      setMiniPreviewSize(calcMiniPreviewSizeFromBottomLeft(
+        startX,
+        startY,
+        moveEvent.clientX,
+        moveEvent.clientY,
+        startWidth,
+        startHeight
+      ));
     };
 
     const onMouseUp = () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = 'default';
+      stopResizeRef.current = null;
     };
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
-    document.body.style.cursor = 'nesw-resize';
+    document.body.style.cursor = 'nwse-resize';
+    stopResizeRef.current = onMouseUp;
   }, [miniPreviewSize]);
+
+  const handleResizeHandleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startResizingMiniPreview(e.clientX, e.clientY);
+  }, [startResizingMiniPreview]);
+
+  const handleResizeHandleTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    e.preventDefault();
+    e.stopPropagation();
+    startResizingMiniPreview(touch.clientX, touch.clientY);
+  }, [startResizingMiniPreview]);
+
+  React.useEffect(() => {
+    return () => {
+      if (stopResizeRef.current) {
+        stopResizeRef.current();
+      }
+    };
+  }, []);
 
   const BUILT_IN_ASSETS = [
     { id: 'recycle', src: 'https://cdn-icons-png.flaticon.com/512/104/104647.png', category: '图标' },
@@ -397,6 +613,8 @@ export default function App() {
         currentSide={currentSide} 
         setCurrentSide={setCurrentSide} 
         onSaveTemplate={handleSaveTemplate}
+        onExport={handleExportOpen}
+        onExport3D={isGlbMode ? handleExport3D : undefined}
       />
       
       <div className="flex-1 flex overflow-hidden">
@@ -655,21 +873,76 @@ export default function App() {
               {/* Placeholder for other tabs */}
               {activeTab === 'box' && (
                 <div className="flex flex-col gap-4 p-4">
+                  <h3 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wider">3D 白模导入 (GLB)</h3>
+                  
+                  <button
+                    onClick={() => {
+                      setGlbModelUrl('/pot.glb');
+                      setElements([]); // Clear canvas elements
+                      setCanvasColor('transparent'); // Reset background color to transparent
+                      setCanvasTexture(null); // Clear background texture
+                    }}
+                    className={cn(
+                      "flex items-center gap-3 p-3 rounded-lg border transition-all text-left group",
+                      glbModelUrl === '/pot.glb' 
+                        ? "border-orange-500 bg-orange-50 shadow-sm" 
+                        : "border-gray-100 hover:border-gray-200 bg-white"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-10 h-10 rounded flex items-center justify-center transition-colors",
+                      glbModelUrl === '/pot.glb' ? "bg-orange-500 text-white" : "bg-gray-50 text-gray-400 group-hover:bg-gray-100"
+                    )}>
+                      <Box size={20} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold text-gray-900 truncate">内置模型库 (金属罐)</div>
+                      <div className="text-[10px] text-gray-400">默认示例</div>
+                    </div>
+                  </button>
+
+                  <label className="flex items-center gap-3 p-3 rounded-lg border border-gray-100 hover:border-gray-200 bg-white transition-all text-left group cursor-pointer">
+                    <input 
+                      type="file" 
+                      accept=".glb,.gltf,.fbx,.obj" 
+                      className="hidden" 
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setGlbModelUrl(file);
+                          setElements([]); // Clear canvas elements
+                          setCanvasColor('transparent'); // Reset background color to transparent
+                          setCanvasTexture(null); // Clear background texture
+                        }
+                      }}
+                    />
+                    <div className="w-10 h-10 rounded flex items-center justify-center transition-colors bg-gray-50 text-gray-400 group-hover:bg-gray-100">
+                      <Upload size={20} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold text-gray-900 truncate">本地文件上传</div>
+                      <div className="text-[10px] text-gray-400">选择本地 .glb 文件</div>
+                    </div>
+                  </label>
+
+                  <div className="h-px bg-gray-100 my-2" />
+                  
+                  <h3 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wider">传统盒型</h3>
                   <div className="grid grid-cols-1 gap-3">
                     {BOX_TEMPLATES.map((template) => (
                       <button
                         key={template.id}
-                        onClick={() => setBoxType(template)}
+                        onClick={() => { setBoxType(template); setGlbModelUrl(null); }}
                         className={cn(
                           "flex items-center gap-3 p-3 rounded-lg border transition-all text-left group",
-                          boxType.id === template.id 
+                          (!glbModelUrl && boxType.id === template.id)
                             ? "border-orange-500 bg-orange-50 shadow-sm" 
                             : "border-gray-100 hover:border-gray-200 bg-white"
                         )}
                       >
                         <div className={cn(
                           "w-10 h-10 rounded flex items-center justify-center transition-colors",
-                          boxType.id === template.id ? "bg-orange-500 text-white" : "bg-gray-50 text-gray-400 group-hover:bg-gray-100"
+                          (!glbModelUrl && boxType.id === template.id) ? "bg-orange-500 text-white" : "bg-gray-50 text-gray-400 group-hover:bg-gray-100"
                         )}>
                           <Box size={20} />
                         </div>
@@ -738,104 +1011,75 @@ export default function App() {
                   selectedId={selectedId} 
                   onSelect={setSelectedId}
                   onChange={(newElements) => {
-                    // Merge updated elements back into the main list
                     const otherSideElements = elements.filter(el => el.side !== currentSide);
                     setElements([...otherSideElements, ...newElements]);
                   }}
                   canvasColor={canvasColor}
                   canvasTexture={canvasTexture}
                   boxType={boxType}
+                  glbData={glbData}
+                  textureSizeConfig={modelPanelMode === 'white_uv' ? currentTextureSize : undefined}
+                  onCanvasReady={handleCanvasReady}
                 />
               ) : (
                 <Preview3D 
-                  elements={elements} 
-                  unfoldProgress={unfoldProgress} 
-                  canvasColor={canvasColor} 
-                  canvasTexture={canvasTexture}
-                  boxType={boxType}
-                />
-              )}
-
-              {/* Floating 3D Mini Preview when in 2D mode */}
-              {viewMode === '2d' && (
-                <div 
-                  className="absolute top-4 right-4 rounded-xl shadow-2xl border-4 border-white overflow-hidden z-20 group bg-gray-100"
-                  style={{ width: miniPreviewSize.width, height: miniPreviewSize.height }}
-                >
-                  <Preview3D 
                     elements={elements} 
-                    isMini 
                     unfoldProgress={unfoldProgress} 
                     canvasColor={canvasColor} 
                     canvasTexture={canvasTexture}
                     boxType={boxType}
+                    glbData={glbData}
+                    designCanvas={designCanvas}
+                    metalness={metalness}
+                    roughness={roughness}
+                    textureSizeConfig={modelPanelMode === 'white_uv' ? currentTextureSize : undefined}
                   />
+                )}
+
+                {/* Floating 3D Mini Preview when in 2D mode */}
+                {viewMode === '2d' && (
+                  <div 
+                    className="absolute top-4 right-4 rounded-xl shadow-2xl border-4 border-white overflow-hidden z-20 group bg-gray-100"
+                    style={{ width: miniPreviewSize.width, height: miniPreviewSize.height }}
+                  >
+                    <Preview3D 
+                      elements={elements} 
+                      isMini 
+                      unfoldProgress={unfoldProgress} 
+                      canvasColor={canvasColor} 
+                      canvasTexture={canvasTexture}
+                      boxType={boxType}
+                      glbData={glbData}
+                      designCanvas={designCanvas}
+                      metalness={metalness}
+                      roughness={roughness}
+                      textureSizeConfig={modelPanelMode === 'white_uv' ? currentTextureSize : undefined}
+                    />
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none">
                     <span className="text-white text-[10px] font-medium bg-black/40 px-2 py-1 rounded">3D 实时预览</span>
                   </div>
 
                   {/* Resize Handle - Bottom Left */}
                   <div 
-                    onMouseDown={startResizingMiniPreview}
-                    className="absolute bottom-0 left-0 w-6 h-6 cursor-nesw-resize z-30 flex items-end justify-start p-1 group/handle"
+                    onMouseDown={handleResizeHandleMouseDown}
+                    onTouchStart={handleResizeHandleTouchStart}
+                    className="absolute bottom-1 left-1 w-7 h-7 cursor-nwse-resize z-40 flex items-end justify-start p-1 rounded-sm bg-black/35 hover:bg-orange-500/80 transition-colors touch-none select-none"
                     title="调整大小"
+                    data-testid="mini-preview-resize-handle"
                   >
-                    <div className="w-2.5 h-2.5 border-b-2 border-l-2 border-gray-400 group-hover/handle:border-orange-500 transition-colors rounded-bl-sm" />
+                    <div className="w-2.5 h-2.5 border-b-2 border-l-2 border-white rounded-bl-sm" />
                   </div>
                 </div>
               )}
 
-              {/* Unfold Control Slider */}
-              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-sm px-4 py-3 rounded-full shadow-lg border border-gray-200 z-30 flex items-center gap-4 min-w-[350px]">
-                <button 
-                  onClick={() => {
-                    if (isPlaying) {
-                      setIsPlaying(false);
-                    } else {
-                      // Decide direction based on current progress to match the icon
-                      const targetDirection = unfoldProgress >= 0.5 ? -1 : 1;
-                      setAnimationDirection(targetDirection);
-                      setIsPlaying(true);
-                    }
-                  }}
-                  className="w-8 h-8 flex items-center justify-center bg-orange-500 text-white rounded-full hover:bg-orange-600 transition-colors shadow-sm"
-                  title={isPlaying ? "暂停" : (unfoldProgress >= 0.5 ? "折叠" : "展开")}
-                >
-                  {isPlaying ? (
-                    <Pause size={16} fill="currentColor" />
-                  ) : (
-                    unfoldProgress >= 0.5 ? <ChevronsDown size={16} /> : <ChevronsUp size={16} />
-                  )}
-                </button>
-
-                <button 
-                  onClick={() => {
-                    setIsPlaying(false);
-                    setUnfoldProgress(0);
-                  }}
-                  className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
-                  title="重置"
-                >
-                  <RotateCcw size={16} />
-                </button>
-
-                <div className="h-4 w-[1px] bg-gray-200 mx-1" />
-
-                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider whitespace-nowrap">展开进度</span>
-                <input 
-                  type="range" 
-                  min="0" 
-                  max="1" 
-                  step="0.01" 
-                  value={unfoldProgress} 
-                  onChange={(e) => {
-                    setIsPlaying(false);
-                    setUnfoldProgress(parseFloat(e.target.value));
-                  }}
-                  className="flex-1 accent-orange-500 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                />
-                <span className="text-xs font-mono font-bold text-orange-600 w-10">{Math.round(unfoldProgress * 100)}%</span>
-              </div>
+              <SwitchBoxControls
+                visible={isBoxModel}
+                unfoldProgress={unfoldProgress}
+                isPlaying={isPlaying}
+                onToggle={togglePlayback}
+                onReset={resetPlayback}
+                onProgressChange={changeProgress}
+              />
             </div>
         </main>
 
@@ -852,8 +1096,17 @@ export default function App() {
           canvasTexture={canvasTexture}
           onCanvasTextureChange={(tex) => {
             setCanvasTexture(tex);
-            setCanvasColor('#FFFFFF');
+            if (tex) {
+              setCanvasColor('#FFFFFF');
+            }
           }}
+          metalness={metalness}
+          onMetalnessChange={setMetalness}
+          roughness={roughness}
+          onRoughnessChange={setRoughness}
+          modelPanelMode={modelPanelMode}
+          textureSizeConfig={currentTextureSize}
+          onTextureSizeChange={(patch) => updateTextureSize(patch)}
         />
       </div>
 
@@ -914,6 +1167,14 @@ export default function App() {
         onClose={() => setModalType(null)} 
         type={modalType || 'barcode'} 
         onSave={handleAddCodeToCanvas}
+      />
+
+      <ExportModal 
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        elements={elements}
+        glbData={glbData}
+        designCanvas={designCanvas}
       />
 
       {/* Bottom Status Bar */}

@@ -17,9 +17,11 @@ interface TopBarProps {
   currentSide: 'outside' | 'inside';
   setCurrentSide: (side: 'outside' | 'inside') => void;
   onSaveTemplate: () => void;
+  onExport: () => void;
+  onExport3D?: () => void;
 }
 
-export function TopBar({ viewMode, setViewMode, currentSide, setCurrentSide, onSaveTemplate }: TopBarProps) {
+export function TopBar({ viewMode, setViewMode, currentSide, setCurrentSide, onSaveTemplate, onExport, onExport3D }: TopBarProps) {
   return (
     <header className="h-12 bg-white border-b border-gray-200 flex items-center px-4 justify-between z-20">
       <div className="flex items-center gap-4">
@@ -84,11 +86,19 @@ export function TopBar({ viewMode, setViewMode, currentSide, setCurrentSide, onS
         >
           <Zap size={14} className="text-orange-500" /> 保存为模板
         </button>
-        <button className="flex items-center gap-1 text-xs font-medium text-orange-500 bg-orange-50 hover:bg-orange-100 px-4 py-1.5 rounded-md border border-orange-200">
-          渲染
-        </button>
-        <button className="flex items-center gap-1 text-xs font-medium text-white bg-orange-500 hover:bg-orange-600 px-5 py-1.5 rounded-md shadow-sm">
-          导出
+        {onExport3D && (
+          <button 
+            onClick={onExport3D}
+            className="flex items-center gap-1 text-xs font-medium text-orange-500 bg-orange-50 hover:bg-orange-100 px-4 py-1.5 rounded-md border border-orange-200"
+          >
+            导出3D模型
+          </button>
+        )}
+        <button 
+          onClick={onExport}
+          className="flex items-center gap-1 text-xs font-medium text-white bg-orange-500 hover:bg-orange-600 px-5 py-1.5 rounded-md shadow-sm"
+        >
+          导出2D
         </button>
         <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center text-orange-500 border border-orange-200 cursor-pointer">
           <User size={18} />

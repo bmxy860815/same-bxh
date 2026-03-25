@@ -19,7 +19,7 @@ interface SidebarProps {
 }
 
 const sidebarItems: { icon: any, label: string, id: TabType }[] = [
-  { icon: Box, label: '盒型', id: 'box' },
+  { icon: Box, label: '模型', id: 'box' },
   { icon: Layout, label: '模板', id: 'template' },
   { icon: ImageIcon, label: '素材', id: 'asset' },
   { icon: Type, label: '文字', id: 'text' },
